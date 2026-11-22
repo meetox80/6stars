@@ -30,8 +30,15 @@ final class Deferred {
     let envFacePipe: MTLRenderPipelineState
     let envPrefilterPipe: MTLRenderPipelineState
     let indirectPipe: MTLRenderPipelineState
+    let accumPipe: MTLRenderPipelineState
     var giTex: MTLTexture?
     var reflTex: MTLTexture?
+    var giHist: [MTLTexture] = []
+    var reflHist: [MTLTexture] = []
+    var histIndex = 0
+    var giOut: MTLTexture?
+    var reflOut: MTLTexture?
+    static let indirectBlend: Float = 0.12
     var giEnabled = ProcessInfo.processInfo.environment["MV_NOINDIRECT"] == nil
     var reflectionsEnabled = ProcessInfo.processInfo.environment["MV_NOINDIRECT"] == nil
     var indirectFrame = 0
@@ -111,6 +118,8 @@ final class Deferred {
         id.colorAttachments[0].pixelFormat = .rgba16Float
         id.colorAttachments[1].pixelFormat = .rgba16Float
         indirectPipe = try device.makeRenderPipelineState(descriptor: id)
+        id.fragmentFunction = try fn("indirectAccumFragment")
+        accumPipe = try device.makeRenderPipelineState(descriptor: id)
         func cube() throws -> MTLTexture {
             let d = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Atmosphere.hdrFormat, size: Deferred.envSize, mipmapped: true)
             d.usage = [.renderTarget, .shaderRead]
@@ -161,6 +170,11 @@ final class Deferred {
         hd.storageMode = .private
         giTex = device.makeTexture(descriptor: hd)
         reflTex = device.makeTexture(descriptor: hd)
+        giHist = (0..<2).compactMap { _ in device.makeTexture(descriptor: hd) }
+        reflHist = (0..<2).compactMap { _ in device.makeTexture(descriptor: hd) }
+        histIndex = 0
+        giOut = giTex
+        reflOut = reflTex
     }
 
     func indirect(_ cmd: MTLCommandBuffer, _ a: inout AtmosGPU, depth: MTLTexture, previous: MTLTexture?, prevViewProj: simd_float4x4?) {
@@ -190,6 +204,35 @@ final class Deferred {
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         }
         enc.endEncoding()
+        accumulate(cmd, &at, depth: depth, prevViewProj: prevViewProj)
+    }
+
+    func accumulate(_ cmd: MTLCommandBuffer, _ a: inout AtmosGPU, depth: MTLTexture, prevViewProj: simd_float4x4?) {
+        guard let gi = giTex, let rf = reflTex, giHist.count == 2, reflHist.count == 2 else { return }
+        let src = histIndex, dst = 1 - histIndex
+        let p = MTLRenderPassDescriptor()
+        p.colorAttachments[0].texture = giHist[dst]
+        p.colorAttachments[1].texture = reflHist[dst]
+        for i in 0..<2 {
+            p.colorAttachments[i].loadAction = .dontCare
+            p.colorAttachments[i].storeAction = .store
+        }
+        guard let enc = cmd.makeRenderCommandEncoder(descriptor: p) else { return }
+        var params = IndirectParams(prevVP: prevViewProj ?? matrix_identity_float4x4,
+                                    info: SIMD4(prevViewProj != nil ? 1 : 0, Deferred.indirectBlend, 0, 0))
+        enc.setRenderPipelineState(accumPipe)
+        enc.setFragmentBytes(&a, length: MemoryLayout<AtmosGPU>.stride, index: 0)
+        enc.setFragmentBytes(&params, length: MemoryLayout<IndirectParams>.stride, index: 1)
+        enc.setFragmentTexture(gi, index: 0)
+        enc.setFragmentTexture(rf, index: 1)
+        enc.setFragmentTexture(giHist[src], index: 2)
+        enc.setFragmentTexture(reflHist[src], index: 3)
+        enc.setFragmentTexture(depth, index: 11)
+        enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        enc.endEncoding()
+        giOut = giHist[dst]
+        reflOut = reflHist[dst]
+        histIndex = dst
     }
 
     func gbufferPass(hdr: MTLTexture, depth: MTLTexture) -> MTLRenderPassDescriptor {
@@ -252,8 +295,8 @@ final class Deferred {
             enc.setFragmentTexture(depth, index: 11)
             enc.setFragmentTexture(ao, index: 12)
             enc.setFragmentTexture(self.env, index: 13)
-            enc.setFragmentTexture(self.giTex, index: 14)
-            enc.setFragmentTexture(self.reflTex, index: 15)
+            enc.setFragmentTexture(self.giOut, index: 14)
+            enc.setFragmentTexture(self.reflOut, index: 15)
         }
     }
 

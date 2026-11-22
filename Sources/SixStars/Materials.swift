@@ -25,6 +25,8 @@ struct MaterialFlags {
     static let alphaTest: UInt32 = 8
     static let normalMap: UInt32 = 16
     static let textureAlpha: UInt32 = 32
+    static let layer0SecondUV: UInt32 = 64
+    static let distanceFieldText: UInt32 = 256
 }
 
 struct GPUMaterial {
@@ -311,6 +313,7 @@ enum ShaderTable {
     static let layerDiffuse: [UInt32] = [0x7D4F_12E2]
     static let layerNormal: [UInt32] = [0x58B6_E707]
     static let overlayDiffuse: UInt32 = 0x3463_94EA
+    static let textAtlas: UInt32 = 0xCDAB_98A0
 
     static func describe(_ s: ShaderInfo, exists: (UInt64) -> Bool) -> MaterialDesc {
         let n = byHash[s.name] ?? ""
@@ -335,7 +338,11 @@ enum ShaderTable {
         var scheme = WeightScheme.single
         var diffuse: [UInt64] = []
         var normal: [UInt64] = []
-        if n.contains("uber_4lyr") {
+        if n.hasSuffix("decal_blend_text") && tex(textAtlas) != 0 && exists(tex(textAtlas)) {
+            diffuse = [tex(diffuseParam), tex(textAtlas)]
+            normal = [tex(normalParam)]
+            flags = (flags & ~MaterialFlags.textureAlpha) | MaterialFlags.distanceFieldText | MaterialFlags.layer0SecondUV
+        } else if n.contains("uber_4lyr") {
             scheme = .baseRGB
             diffuse = uberDiffuse.map(tex)
             normal = uberNormal.map(tex)
@@ -345,6 +352,7 @@ enum ShaderTable {
                 scheme = .baseB
                 diffuse = [base, over]
                 normal = [0, tex(layerNormal[0])]
+                flags |= MaterialFlags.layer0SecondUV
             } else {
                 diffuse = [tex(overlayDiffuse) != 0 ? tex(overlayDiffuse) : over]
                 normal = [tex(0x84C6_9350)]

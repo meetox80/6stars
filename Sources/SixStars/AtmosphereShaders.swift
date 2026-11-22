@@ -750,14 +750,22 @@ fragment GOut meshFragmentHDR(MeshOut in [[stage_in]], constant Uniforms& u [[bu
     for (uint k = 0; k < layers; k++) {
         float wk = w[k];
         if (wk < 0.004) continue;
-        albedo += tt.t[m.diffuse[k]].sample(s, in.uv, gradient2d(gx, gy)) * wk;
+        bool second = ((m.flags >> (6u + k)) & 1u) != 0u;
+        float2 luv = second ? in.uv1 : in.uv;
+        float2 lgx = second ? dfdx(in.uv1) : gx, lgy = second ? dfdy(in.uv1) : gy;
+        albedo += tt.t[m.diffuse[k]].sample(s, luv, gradient2d(lgx, lgy)) * wk;
         if (useNormal) {
-            float2 nxy = tt.t[m.normal[k]].sample(s, in.uv, gradient2d(gx, gy)).rg * 2.0 - 1.0;
+            float2 nxy = tt.t[m.normal[k]].sample(s, luv, gradient2d(lgx, lgy)).rg * 2.0 - 1.0;
             tn += float3(nxy, sqrt(saturate(1.0 - dot(nxy, nxy)))) * wk;
         }
     }
     float alpha = 1.0;
     if ((m.flags & 32u) != 0u) alpha = albedo.a;
+    if ((m.flags & 256u) != 0u) {
+        float dsd = tt.t[m.diffuse[1]].sample(s, in.uv).r;
+        float fw = max(fwidth(dsd), 1e-3);
+        alpha = smoothstep(0.5 - fw, 0.5 + fw, dsd);
+    }
     if ((m.flags & 2u) != 0u) alpha *= in.c0.a;
     if ((m.flags & 8u) != 0u) {
         if (albedo.a < 0.5) discard_fragment();
@@ -1017,10 +1025,19 @@ fragment float4 taaFragment(QuadOut in [[stage_in]], constant Atmos& a [[buffer(
     float3 mean = m1 / 9.0;
     float3 sigma = sqrt(max(m2 / 9.0 - mean * mean, float3(0.0)));
     float d = dist.read(uint2(px)).r;
-    float3 rd = viewRay(in.uv, a);
+    int2 dpx = px;
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            int2 q = clamp(px + int2(x, y), int2(0), sz - 1);
+            float dq = dist.read(uint2(q)).r;
+            if (dq > 0.0 && (d <= 0.0 || dq < d)) { d = dq; dpx = q; }
+        }
+    }
+    float3 rd = viewRay((float2(dpx) + 0.5) / float2(sz), a);
+    float2 duv = (float2(dpx) - float2(px)) / float2(sz);
     float4 pc = d > 0.0 ? prevVP * float4(a.camPos.xyz + rd * d, 1.0) : prevVP * float4(rd, 0.0);
     if (pc.w <= 0.0) return float4(c, 1.0);
-    float2 puv = float2(pc.x / pc.w * 0.5 + 0.5, 0.5 - pc.y / pc.w * 0.5);
+    float2 puv = float2(pc.x / pc.w * 0.5 + 0.5, 0.5 - pc.y / pc.w * 0.5) - duv;
     if (any(puv < float2(0.0)) || any(puv > float2(1.0))) return float4(c, 1.0);
     float3 hy = taaToYCoCg(sampleCatmullRom(hist, puv) * ex);
     float3 lo = mean - sigma * 1.25, hi = mean + sigma * 1.25;

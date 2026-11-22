@@ -182,14 +182,22 @@ fragment float4 meshFragment(MeshOut in [[stage_in]], constant Uniforms& u [[buf
     for (uint k = 0; k < layers; k++) {
         float wk = w[k];
         if (wk < 0.004) continue;
-        albedo += tt.t[m.diffuse[k]].sample(s, in.uv, gradient2d(gx, gy)) * wk;
+        bool second = ((m.flags >> (6u + k)) & 1u) != 0u;
+        float2 luv = second ? in.uv1 : in.uv;
+        float2 lgx = second ? dfdx(in.uv1) : gx, lgy = second ? dfdy(in.uv1) : gy;
+        albedo += tt.t[m.diffuse[k]].sample(s, luv, gradient2d(lgx, lgy)) * wk;
         if (useNormal) {
-            float2 nxy = tt.t[m.normal[k]].sample(s, in.uv, gradient2d(gx, gy)).rg * 2.0 - 1.0;
+            float2 nxy = tt.t[m.normal[k]].sample(s, luv, gradient2d(lgx, lgy)).rg * 2.0 - 1.0;
             tn += float3(nxy, sqrt(saturate(1.0 - dot(nxy, nxy)))) * wk;
         }
     }
     float alpha = 1.0;
     if ((m.flags & 32u) != 0u) alpha = albedo.a;
+    if ((m.flags & 256u) != 0u) {
+        float dsd = tt.t[m.diffuse[1]].sample(s, in.uv).r;
+        float fw = max(fwidth(dsd), 1e-3);
+        alpha = smoothstep(0.5 - fw, 0.5 + fw, dsd);
+    }
     if ((m.flags & 2u) != 0u) alpha *= in.c0.a;
     if ((m.flags & 8u) != 0u) {
         if (albedo.a < 0.5) discard_fragment();

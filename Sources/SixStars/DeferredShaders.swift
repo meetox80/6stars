@@ -29,14 +29,22 @@ fragment GBOut meshGBuffer(MeshOut in [[stage_in]], constant Uniforms& u [[buffe
     for (uint k = 0; k < layers; k++) {
         float wk = w[k];
         if (wk < 0.004) continue;
-        albedo += tt.t[m.diffuse[k]].sample(s, in.uv, gradient2d(gx, gy)) * wk;
+        bool second = ((m.flags >> (6u + k)) & 1u) != 0u;
+        float2 luv = second ? in.uv1 : in.uv;
+        float2 lgx = second ? dfdx(in.uv1) : gx, lgy = second ? dfdy(in.uv1) : gy;
+        albedo += tt.t[m.diffuse[k]].sample(s, luv, gradient2d(lgx, lgy)) * wk;
         if (useNormal) {
-            float2 nxy = tt.t[m.normal[k]].sample(s, in.uv, gradient2d(gx, gy)).rg * 2.0 - 1.0;
+            float2 nxy = tt.t[m.normal[k]].sample(s, luv, gradient2d(lgx, lgy)).rg * 2.0 - 1.0;
             tn += float3(nxy, sqrt(saturate(1.0 - dot(nxy, nxy)))) * wk;
         }
     }
     float alpha = 1.0;
     if ((m.flags & 32u) != 0u) alpha = albedo.a;
+    if ((m.flags & 256u) != 0u) {
+        float dsd = tt.t[m.diffuse[1]].sample(s, in.uv).r;
+        float fw = max(fwidth(dsd), 1e-3);
+        alpha = smoothstep(0.5 - fw, 0.5 + fw, dsd);
+    }
     if ((m.flags & 2u) != 0u) alpha *= in.c0.a;
     if ((m.flags & 8u) != 0u) {
         if (gbDiscard && albedo.a < 0.5) discard_fragment();
@@ -93,8 +101,21 @@ static bool traceScreen(float3 P, float3 dir, float maxDist, int steps, float ji
             float3 S = worldFromDepth(uv, zs, a);
             float behind = distance(a.camPos.xyz, q) - distance(a.camPos.xyz, S);
             if (behind < max(0.35, t * 0.12)) {
-                hitP = S;
-                hitUV = uv;
+                float sp = float(max(i, 1) - 1) + jitter;
+                float lo = maxDist * (sp / float(steps)) * (sp / float(steps)), hi = t;
+                float2 buv = uv;
+                float bz = zs;
+                for (int k = 0; k < 5; k++) {
+                    float tm = 0.5 * (lo + hi);
+                    float3 qm = P + dir * tm;
+                    float zm;
+                    bool fm;
+                    float2 um = projectUV(qm, a.viewProj, zm, fm);
+                    float zsm = depth.sample(ds, um);
+                    if (zsm > zm && zsm > 0.0) { hi = tm; buv = um; bz = zsm; } else { lo = tm; }
+                }
+                hitP = worldFromDepth(buv, bz, a);
+                hitUV = buv;
                 return true;
             }
         }
@@ -238,6 +259,76 @@ static float2 envBRDFApprox(float rough, float ndv) {
     return float2(-1.04, 1.04) * a004 + r.zw;
 }
 
+static void upsampleIndirect(texture2d<float> giTex, texture2d<float> reflTex, depth2d<float> depth, uint2 px, float d,
+                             thread float4& gi, thread float4& rf) {
+    int2 hs = int2(giTex.get_width(), giTex.get_height());
+    int2 fs = int2(depth.get_width(), depth.get_height());
+    float2 h = (float2(px) + 0.5) * 0.5 - 0.5;
+    int2 b = int2(floor(h));
+    float2 f = h - float2(b);
+    float lz = 1.0 / max(d, 1e-9);
+    float4 ga = float4(0.0), ra = float4(0.0);
+    float wsum = 0.0;
+    for (int y = 0; y <= 1; y++) {
+        for (int x = 0; x <= 1; x++) {
+            int2 q = clamp(b + int2(x, y), int2(0), hs - 1);
+            float dq = depth.read(uint2(clamp(q * 2 + 1, int2(0), fs - 1)));
+            float lq = 1.0 / max(dq, 1e-9);
+            float bw = (x == 0 ? 1.0 - f.x : f.x) * (y == 0 ? 1.0 - f.y : f.y);
+            float w = bw * exp(-abs(lq - lz) / (lz * 0.04)) + 1e-5 * bw;
+            ga += giTex.read(uint2(q)) * w;
+            ra += reflTex.read(uint2(q)) * w;
+            wsum += w;
+        }
+    }
+    gi = ga / max(wsum, 1e-8);
+    rf = ra / max(wsum, 1e-8);
+}
+
+struct AccumOut {
+    float4 gi [[color(0)]];
+    float4 refl [[color(1)]];
+};
+
+fragment AccumOut indirectAccumFragment(QuadOut in [[stage_in]], constant Atmos& a [[buffer(0)]], constant IndirectParams& ip [[buffer(1)]],
+                                        texture2d<float> curGi [[texture(0)]], texture2d<float> curRefl [[texture(1)]],
+                                        texture2d<float> histGi [[texture(2)]], texture2d<float> histRefl [[texture(3)]],
+                                        depth2d<float> depth [[texture(11)]]) {
+    AccumOut o;
+    int2 p = int2(in.position.xy);
+    int2 sz = int2(curGi.get_width(), curGi.get_height());
+    float4 g = curGi.read(uint2(p)), r = curRefl.read(uint2(p));
+    float4 gmin = g, gmax = g, rmin = r, rmax = r, gm = float4(0.0), rm = float4(0.0), gm2 = float4(0.0), rm2 = float4(0.0);
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            uint2 q = uint2(clamp(p + int2(x, y), int2(0), sz - 1));
+            float4 gq = curGi.read(q), rq = curRefl.read(q);
+            gm += gq; gm2 += gq * gq; rm += rq; rm2 += rq * rq;
+        }
+    }
+    gm /= 9.0; rm /= 9.0;
+    float4 gs = sqrt(max(gm2 / 9.0 - gm * gm, 0.0)), rs = sqrt(max(rm2 / 9.0 - rm * rm, 0.0));
+    gmin = gm - gs * 1.5; gmax = gm + gs * 1.5;
+    rmin = rm - rs * 1.5; rmax = rm + rs * 1.5;
+    constexpr sampler ns(filter::nearest, address::clamp_to_edge);
+    constexpr sampler ls(filter::linear, address::clamp_to_edge);
+    float d = depth.sample(ns, in.uv);
+    o.gi = g;
+    o.refl = r;
+    if (d <= 0.0 || ip.info.x < 0.5) return o;
+    float3 P = worldFromDepth(in.uv, d, a);
+    float zp;
+    bool front;
+    float2 puv = projectUV(P, ip.prevVP, zp, front);
+    if (!front || any(puv < float2(0.0)) || any(puv > float2(1.0))) return o;
+    float4 hg = clamp(histGi.sample(ls, puv), gmin, gmax);
+    float4 hr = clamp(histRefl.sample(ls, puv), rmin, rmax);
+    float alpha = ip.info.y;
+    o.gi = mix(hg, g, alpha);
+    o.refl = mix(hr, r, alpha);
+    return o;
+}
+
 fragment float4 lightFragment(QuadOut in [[stage_in]], constant Atmos& a [[buffer(0)]], constant float4* sh [[buffer(1)]],
                               constant ShadowData& sd [[buffer(2)]],
                               texture2d<float> trans [[texture(0)]], depth2d_array<float> sm [[texture(3)]],
@@ -271,9 +362,8 @@ fragment float4 lightFragment(QuadOut in [[stage_in]], constant Atmos& a [[buffe
     float kk = (rough + 1.0) * (rough + 1.0) / 8.0;
     float G = 1.0 / ((ndl * (1.0 - kk) + kk) * (ndv * (1.0 - kk) + kk));
     float3 spec = Esun * Fs * (D * G * ndl / 4.0);
-    constexpr sampler hs(filter::linear, address::clamp_to_edge);
-    float4 gi = giTex.sample(hs, in.uv);
-    float4 rf = reflTex.sample(hs, in.uv);
+    float4 gi, rf;
+    upsampleIndirect(giTex, reflTex, depth, px, d, gi, rf);
     float3 Eamb = shIrradiance(sh, N) * a.ambient.rgb * (1.0 - gi.a) + gi.rgb;
     constexpr sampler es(filter::linear, mip_filter::linear);
     float3 R = reflect(-V, N);

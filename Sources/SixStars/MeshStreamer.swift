@@ -111,7 +111,8 @@ final class MeshStreamer {
         let gm = GPUMaterial(diffuse: (diff[0], diff[1], diff[2], diff[3]), normal: (norm[0], norm[1], norm[2], norm[3]),
                              kind: d.kind.rawValue, scheme: d.scheme.rawValue, flags: flags, layers: UInt32(layers), spec: spec)
         let key = "\(d.kind.rawValue)|\(d.scheme.rawValue)|\(flags)|\(diff)|\(norm)|\(spec)"
-        let slots = (diff.prefix(layers) + norm.prefix(layers) + [spec]).filter { $0 >= 2 }
+        let used = (flags & MaterialFlags.distanceFieldText) != 0 ? max(layers, 2) : layers
+        let slots = (diff.prefix(used) + norm.prefix(layers) + [spec]).filter { $0 >= 2 }
         return (materials.add(gm, key: key), d.kind, slots, d.kind == .cutout || (flags & MaterialFlags.alphaTest) != 0)
     }
 
