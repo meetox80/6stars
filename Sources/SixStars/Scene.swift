@@ -18,6 +18,7 @@ struct Node {
     var level: UInt8
     var nearDist: Float = 0
     var nearRadius: Float = 0
+    var gate: Int32 = -1
 }
 
 struct Grid {
@@ -55,10 +56,21 @@ final class Scene {
     var invertRotation = true
     let lodDistanceScale = Float(ProcessInfo.processInfo.environment["MV_LODDIST"] ?? "") ?? 3
 
-    init(catalog: Catalog, index: ArchiveIndex, file: MappedFile, world: WorldData) {
+    let sources: [(index: ArchiveIndex, file: MappedFile)]
+    lazy var shadowOnly: Set<Int32> = {
+        var out = Set<Int32>()
+        for (i, e) in catalog.entries.enumerated() {
+            let n = e.name.lowercased()
+            if n.hasSuffix("_pxy") || n.contains("_pxy_") { out.insert(Int32(i)) }
+        }
+        return out
+    }()
+
+    init(catalog: Catalog, sources: [(index: ArchiveIndex, file: MappedFile)], world: WorldData) {
         self.catalog = catalog
-        self.index = index
-        self.file = file
+        self.sources = sources
+        self.index = sources[0].index
+        self.file = sources[0].file
         self.world = world
         entityCount = world.entities.count
         rebuild()
@@ -72,7 +84,7 @@ final class Scene {
         var childLists = [[Int32]](repeating: [], count: ents.count)
         var batchChild = [Bool](repeating: false, count: ents.count)
         for (i, e) in ents.enumerated() where e.parent >= 0 && Int(e.parent) < ents.count && Int(e.parent) != i {
-            if e.batch >= 0 && ents[Int(e.parent)].batch >= 0 {
+            if ents[Int(e.parent)].batch >= 0 {
                 batchChild[i] = true
                 continue
             }
@@ -105,11 +117,12 @@ final class Scene {
                       simd_dot(SIMD3(row2.x, row2.y, row2.z), c) + row2.w)
             }
             let arch = world.archetypes[e.archetype]
-            var drawable: Int32 = e.archetype == 0 ? -2 : (catalog.byHash[e.archetype].map { catalog.entries[$0].lodClass == LodClass.hidden ? -2 : -1 } ?? -1)
+            let found = catalog.byHash[e.archetype] ?? arch.flatMap { catalog.byHash[$0.asset] }
+            var drawable: Int32 = e.archetype == 0 ? -2 : (found.map { catalog.entries[$0].lodClass == LodClass.hidden ? -2 : -1 } ?? -1)
             var localCenter = arch?.center ?? .zero
             var radius = arch?.radius ?? 0
             var cls = Int(min(e.lodLevel, 2))
-            if let di = catalog.byHash[e.archetype] {
+            if let di = found {
                 let c = catalog.entries[di]
                 if c.lodClass != LodClass.hidden {
                     drawable = Int32(di)
@@ -145,6 +158,7 @@ final class Scene {
                 }
             }
         }
+        for i in 0..<nodes.count where ents[i].gate >= 0 { nodes[i].gate = ents[i].gate }
         children.removeAll(keepingCapacity: true)
         roots.removeAll(keepingCapacity: true)
         for i in 0..<nodes.count {

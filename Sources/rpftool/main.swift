@@ -349,6 +349,17 @@ case "prd0fail":
         lock.unlock()
     }
     for (k, v) in kinds.sorted(by: { $0.value.0 > $1.value.0 }).prefix(25) { print(String(format: "%8d  ex 0x%llx  %@", v.0, v.1, k as NSString)) }
+case "structs":
+    guard args.count == 5, let res = UInt64(args[4].hasPrefix("0x") ? String(args[4].dropFirst(2)) : args[4], radix: 16) else { fail("usage: rpftool structs <rpf> <index> <reshex>") }
+    let f = try MappedFile(path: args[2])
+    let idx = try ArchiveIndex.read(from: args[3])
+    let r = try idx.resource(at: res, from: f, physical: false)
+    let p = try PRD0(r.virtual)
+    for (t, st) in p.structs.sorted(by: { $0.key < $1.key }) {
+        let n = p.blocks.filter { $0.type == t }.reduce(0) { $0 + (st.size > 0 ? $1.size / st.size : 0) }
+        print(String(format: "struct %08x size %d instances %d", t, st.size, n))
+        for m in st.members where m.name != 0x100 { print(String(format: "   %08x @0x%x type %02x ref %08x", m.name, m.offset, m.type, m.ref)) }
+    }
 case "hashrefs":
     guard args.count >= 5 else { fail("usage: rpftool hashrefs <rpf> <index> <hex32>...") }
     let f = try MappedFile(path: args[2])
@@ -650,7 +661,7 @@ case "navbits":
     }
 case "batchnames":
     let home = NSHomeDirectory()
-    let wd = try WorldData.read(from: "\(home)/testing/6stars-data/world-v7.bin")
+    let wd = try WorldData.read(from: "\(home)/testing/6stars-data/world-v13.bin")
     let cat = try Catalog.read(from: "\(home)/testing/6stars-data/catalog.bin")
     var counts: [UInt32: Int] = [:]
     for e in wd.entities where e.hasBasis && e.archetype != 0 { counts[e.archetype, default: 0] += 1 }
@@ -668,7 +679,7 @@ case "navveg":
     guard args.count >= 4, let px = Float(args[2]), let py = Float(args[3]) else { fail("usage: rpftool navveg <x> <y> [reach]") }
     let reach = args.count > 4 ? Float(args[4]) ?? 300 : 300
     let home = NSHomeDirectory()
-    let wd = try WorldData.read(from: "\(home)/testing/6stars-data/world-v7.bin")
+    let wd = try WorldData.read(from: "\(home)/testing/6stars-data/world-v13.bin")
     let cat = try Catalog.read(from: "\(home)/testing/6stars-data/catalog.bin")
     let cell: Float = 2.5
     var veg = Set<Int64>()

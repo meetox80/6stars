@@ -170,7 +170,8 @@ final class MeshStreamer {
     func load(_ key: Int64) -> GPUMesh? {
         let id = Int32(key >> 2), lod = Int(key & 3)
         let e = scene.catalog.entries[Int(id)]
-        guard let m = try? Drawable.load(scene.index, scene.file, resource: e.resource, base: Int(e.base), lod: lod) else { return nil }
+        let src = scene.sources[min(Int(e.source), scene.sources.count - 1)]
+        guard let m = try? Drawable.load(src.index, src.file, resource: e.resource, base: Int(e.base), lod: lod) else { return nil }
         recordLod(id, m)
         return build(m)
     }

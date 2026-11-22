@@ -39,7 +39,7 @@ struct World {
             try index.write(to: indexPath)
         }
         let catalogPath = "\(dir)/catalog.bin"
-        let catalog: Catalog
+        var catalog: Catalog
         if let c = try? Catalog.read(from: catalogPath) {
             catalog = c
         } else {
@@ -47,7 +47,32 @@ struct World {
             catalog = Catalog.build(index: index, file: file) { d, n in status("Cataloguing drawables: \(d * 100 / n)%") }
             try? catalog.write(to: catalogPath)
         }
-        let worldPath = "\(dir)/world-v7.bin"
+        var sources: [(index: ArchiveIndex, file: MappedFile)] = [(index, file)]
+        let packRoot = "\(NSHomeDirectory())/testing/pack"
+        for name in ["core_restofworld", "core_restofworld001", "shared_minigame000", "story000", "story000_restofworld"] {
+            guard let pf = try? MappedFile(path: "\(packRoot)/\(name)/\(name).rpf") else { continue }
+            let pip = "\(dir)/pack_\(name).idx"
+            let pidx: ArchiveIndex
+            if let existing = try? ArchiveIndex.read(from: pip) {
+                pidx = existing
+            } else {
+                status("Scanning \(name) (first run)")
+                pidx = ArchiveIndex.scan(pf) { _, _ in }
+                try? pidx.write(to: pip)
+            }
+            let pcp = "\(dir)/catalog_\(name).bin"
+            let pcat: Catalog
+            if let c = try? Catalog.read(from: pcp) {
+                pcat = c
+            } else {
+                status("Cataloguing \(name) drawables (first run)")
+                pcat = Catalog.build(index: pidx, file: pf) { _, _ in }
+                try? pcat.write(to: pcp)
+            }
+            catalog = catalog.adding(pcat, source: UInt8(sources.count))
+            sources.append((pidx, pf))
+        }
+        let worldPath = "\(dir)/world-v13.bin"
         let worldData: WorldData
         if let w = try? WorldData.read(from: worldPath) {
             worldData = w
@@ -56,7 +81,7 @@ struct World {
             worldData = WorldData.load(sources: [(index, file)], progress: status)
             let ps = worldData.parentStats
             status("LOD hierarchy: \(ps.resolved) of \(ps.maps) child maps linked, \(ps.childLinks) links, \(ps.exact) parents with exact child counts")
-            print("LOD hierarchy: \(ps.resolved) of \(ps.maps) child maps linked, \(ps.childLinks) links, \(ps.exact) parents with exact child counts, \(WorldData.unlisted.value) entities outside entity lists, vegetation batches \(WorldData.batchStats.batches) → \(WorldData.batchStats.instances) instances, \(WorldData.batchStats.unresolved) unresolved")
+            print("LOD hierarchy: \(ps.resolved) of \(ps.maps) child maps linked, \(ps.childLinks) links, \(ps.exact) parents with exact child counts, \(WorldData.unlisted.value) entities outside entity lists, vegetation batches \(WorldData.batchStats.batches) → \(WorldData.batchStats.instances) instances, \(WorldData.batchStats.unresolved) unresolved, \(worldData.interiorCount) interiors → \(worldData.interiorEntities) interior entities")
             try? worldData.write(to: worldPath)
         }
         status("Decoding terrain heightmap")
@@ -65,7 +90,7 @@ struct World {
         let home = NSHomeDirectory()
         let textures = TextureDB(roots: ["\(home)/testing/data/ttdb", "\(home)/testing/pack"], aliasArchive: ("\(home)/testing/textures.rpf", "\(home)/testing/6stars-data/textures.idx"))
         status("Placing \(worldData.entities.count) entities")
-        var w = World(scene: Scene(catalog: catalog, index: index, file: file, world: worldData), textures: textures)
+        var w = World(scene: Scene(catalog: catalog, sources: sources, world: worldData), textures: textures)
         w.heights = heights
         w.focus = heights?.densestTallArea()
         w.buildGrid()

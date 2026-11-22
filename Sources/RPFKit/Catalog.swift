@@ -10,6 +10,7 @@ public struct CatalogEntry: Sendable {
     public var radius: Float
     public var lodClass: UInt8
     public var name: String
+    public var source: UInt8 = 0
 
     public var center: SIMD3<Float> { (boundsMin + boundsMax) / 2 }
 }
@@ -36,6 +37,15 @@ public final class Catalog {
     public init(entries: [CatalogEntry]) {
         self.entries = entries
         for (i, e) in entries.enumerated() where byHash[e.hash] == nil { byHash[e.hash] = i }
+    }
+
+    public func adding(_ other: Catalog, source: UInt8) -> Catalog {
+        var merged = entries
+        for var e in other.entries where byHash[e.hash] == nil {
+            e.source = source
+            merged.append(e)
+        }
+        return Catalog(entries: merged)
     }
 
     static func name(_ v: ByteView, _ o: Int) -> String? {

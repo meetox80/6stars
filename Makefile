@@ -15,13 +15,19 @@ SWIFT_BUILD = swift build -c $(CONFIG) \
 	--security-path $(CACHE)/swiftpm-security \
 	--manifest-cache local
 
-.PHONY: all engine rpftool app run clean
+.PHONY: all engine rpftool app run clean buildinfo
 
-all: | $(CACHE_DIRS)
+BUILD_INFO = Sources/SixStars/BuildInfo.swift
+
+all: buildinfo | $(CACHE_DIRS)
 	$(SWIFT_BUILD)
 
-engine: | $(CACHE_DIRS)
+engine: buildinfo | $(CACHE_DIRS)
 	$(SWIFT_BUILD) --product 6stars
+
+buildinfo:
+	@printf 'enum BuildInfo {\n    static let date = "%s"\n}\n' "$$(date -u '+%Y-%m-%d %H:%M UTC')" > $(BUILD_INFO).tmp
+	@cmp -s $(BUILD_INFO).tmp $(BUILD_INFO) && rm $(BUILD_INFO).tmp || mv $(BUILD_INFO).tmp $(BUILD_INFO)
 
 rpftool: | $(CACHE_DIRS)
 	$(SWIFT_BUILD) --product rpftool
@@ -37,7 +43,7 @@ run: engine
 	$(BIN)/6stars $(ARGS)
 
 clean:
-	rm -rf .build
+	rm -rf .build $(BUILD_INFO)
 
 $(CACHE_DIRS):
 	mkdir -p $@

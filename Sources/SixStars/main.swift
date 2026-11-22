@@ -339,7 +339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
         window = NSWindow(contentRect: frame, styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "6stars — levels.rpf"
+        window.title = "6stars — github.com/meetox80/6stars — built \(BuildInfo.date)"
         view = FlyView(frame: frame, renderer: renderer)
         window.contentView = view
         window.center()

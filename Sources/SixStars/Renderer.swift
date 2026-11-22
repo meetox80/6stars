@@ -236,6 +236,10 @@ final class Renderer {
         var prefetch: [(key: Int64, dist: Float)] = []
         var count = 0
         let nodes = scene.nodes, kids = scene.children, ents = scene.world.entities
+        let shadowOnly = scene.shadowOnly
+        let gates = scene.world.gates
+        var openGates = Set<Int32>()
+        for (gi, g) in gates.enumerated() where simd_distance_squared(g.position, p) < 40_000 && g.contains(p) { openGates.insert(Int32(gi)) }
         var shown: [Int32] = []
         func inFrustum(_ n: Node) -> Bool {
             for q in pl where simd_dot(SIMD3(q.x, q.y, q.z), n.bcenter) + q.w < -n.bradius { return false }
@@ -281,6 +285,8 @@ final class Renderer {
         func emit(_ i: Int32, _ n: Node, _ d: Float, fadingOut: Bool = false) {
             guard n.drawable >= 0, classes[Int(n.level)] else { return }
             if nearFade(n, d) <= 0 { return }
+            if !castersOnly && shadowOnly.contains(n.drawable) { return }
+            if n.gate >= 0 && !openGates.contains(n.gate) { return }
             if !castersOnly && n.childCount == 0 && n.radius < d * minAngular { return }
             if skipBatches && ents[Int(i)].hasBasis { return }
             if castersOnly {
@@ -322,6 +328,7 @@ final class Renderer {
                         let cn = nodes[Int(c)]
                         if cn.drawable < 0 {
                             if cn.drawable == -1 && cn.childCount == 0 { ready = false }
+                            if cn.gate >= 0 && !openGates.contains(cn.gate) { ready = false }
                             continue
                         }
                         if !streamer.hasMesh(cn.drawable) {
@@ -351,7 +358,7 @@ final class Renderer {
             for i in shown where !prevShown.contains(i) {
                 var swap = false
                 let par = ents[Int(i)].parent
-                if par >= 0, ents[Int(i)].batch < 0 || ents[Int(par)].batch < 0, prevShown.contains(par) {
+                if par >= 0, ents[Int(par)].batch < 0, prevShown.contains(par) {
                     swap = true
                     if fadeOut[par] == nil { fadeOut[par] = now }
                 }
@@ -402,7 +409,8 @@ final class Renderer {
                     } else {
                         let d = simd_distance(n.center, p)
                         var a = nearFade(n, d)
-                        if ents[Int(i)].parent < 0 || ents[Int(i)].batch >= 0 {
+                        let par = ents[Int(i)].parent
+                        if par < 0 || ents[Int(i)].batch >= 0 || ents[Int(par)].batch >= 0 {
                             let reach = max(n.lodDist, n.childLodDist) * k + n.radius
                             a = min(a, (reach - d) / max(reach * 0.12, 4))
                         }

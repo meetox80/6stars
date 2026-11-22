@@ -38,12 +38,32 @@ public struct WorldEntity: Sendable {
     public var basis = Basis()
     public var hasBasis = false
     public var batch: Int32 = -1
+    public var gate: Int32 = -1
+}
+
+public struct InteriorGate: Sendable {
+    public var position: SIMD3<Float>
+    public var rotation: simd_quatf
+    public var boxes: [(SIMD3<Float>, SIMD3<Float>)]
+
+    public func contains(_ p: SIMD3<Float>, margin: Float = 0.5) -> Bool {
+        let l = rotation.inverse.act(p - position)
+        for (lo, hi) in boxes where l.x >= lo.x - margin && l.y >= lo.y - margin && l.z >= lo.z - margin && l.x <= hi.x + margin && l.y <= hi.y + margin && l.z <= hi.z + margin { return true }
+        return false
+    }
+}
+
+public struct InteriorDef: Sendable {
+    public var entities: [WorldEntity]
+    public var inside: [Bool]
+    public var boxes: [(SIMD3<Float>, SIMD3<Float>)]
 }
 
 public struct ArchetypeInfo: Sendable {
     public var lodDist: Float
     public var center: SIMD3<Float>
     public var radius: Float
+    public var asset: UInt32
 }
 
 public final class WorldData {
@@ -51,6 +71,9 @@ public final class WorldData {
     public var parentIds: [UInt64] = []
     public var entities: [WorldEntity] = []
     public var archetypes: [UInt32: ArchetypeInfo] = [:]
+    public var interiorEntities = 0
+    public var interiorCount = 0
+    public var gates: [InteriorGate] = []
 
     public init() {}
 
@@ -64,6 +87,7 @@ public final class WorldData {
     static let archLod: UInt32 = 0xBF74_DFA7
     static let archCenter: UInt32 = 0xD618_72FF
     static let archRadius: UInt32 = 0x82E8_C5DE
+    static let archAsset: UInt32 = 0x9A77_C7C5
 
     public final class Counter: @unchecked Sendable {
         let lock = NSLock()
@@ -253,20 +277,121 @@ public final class WorldData {
         for blk in p.blocks {
             guard let s = p.structs[blk.type], s.size > 0, let (nm, _) = s.member(archName), nm.type == 0x4A,
                   let (lm, _) = s.member(archLod) else { continue }
-            let cm = s.member(archCenter)?.0, rm = s.member(archRadius)?.0
+            let cm = s.member(archCenter)?.0, rm = s.member(archRadius)?.0, am = s.member(archAsset)?.0
             let n = blk.size / s.size
             for i in 0..<n {
                 let o = blk.offset + i * s.size
                 guard o + s.size <= p.b.count else { break }
                 let c = cm.map { SIMD3(p.f32(o + $0.offset), p.f32(o + $0.offset + 4), p.f32(o + $0.offset + 8)) } ?? .zero
-                out[p.u32(o + nm.offset)] = ArchetypeInfo(lodDist: p.f32(o + lm.offset), center: c, radius: rm.map { p.f32(o + $0.offset) } ?? 0)
+                let name = p.u32(o + nm.offset)
+                out[name] = ArchetypeInfo(lodDist: p.f32(o + lm.offset), center: c, radius: rm.map { p.f32(o + $0.offset) } ?? 0,
+                                          asset: am.map { p.u32(o + $0.offset) } ?? name)
             }
         }
+    }
+
+    static let interiorEntities: UInt32 = 0xCCAB_9307
+    static let interiorRooms: UInt32 = 0xCD20_D7A8
+    static let roomMin: UInt32 = 0xD9EF_8236
+    static let roomMax: UInt32 = 0xE78A_A618
+    static let roomObjects: UInt32 = 0x8E05_312C
+
+    static func structRefs(_ p: PRD0, _ field: Int, want: (UInt32) -> Bool) -> [(Int, UInt32)] {
+        guard let (ao, n) = p.array(at: field) else { return [] }
+        let v0 = p.u64(field)
+        let bi0 = Int(v0 & 0xFFFFF)
+        if bi0 >= 1, bi0 <= p.blocks.count, want(p.blocks[bi0 - 1].type), let st = p.structs[p.blocks[bi0 - 1].type], st.size > 0 {
+            return (0..<n).compactMap { k in
+                let o = ao + k * st.size
+                return o + st.size <= p.b.count ? (o, p.blocks[bi0 - 1].type) : nil
+            }
+        }
+        guard ao + 8 * n <= p.b.count else { return [] }
+        return (0..<n).compactMap { k in
+            let v = p.u64(ao + 8 * k)
+            let bi = Int(v & 0xFFFFF)
+            guard bi >= 1, bi <= p.blocks.count, p.blocks[bi - 1].size > 0 else { return nil }
+            return (p.blocks[bi - 1].offset + Int(v >> 20), p.blocks[bi - 1].type)
+        }
+    }
+
+    static func readInteriors(_ p: PRD0, into out: inout [UInt32: InteriorDef]) {
+        var layouts: [UInt32: EntityLayout] = [:]
+        func isRoom(_ t: UInt32) -> Bool { p.structs[t].map { $0.member(roomMin) != nil && $0.member(roomObjects) != nil } ?? false }
+        for blk in p.blocks {
+            guard let s = p.structs[blk.type], s.size > 0, blk.type != MapData.mapStruct, let (nm, _) = s.member(archName), nm.type == 0x4A,
+                  let (em, _) = s.member(interiorEntities), em.type == 0x52 else { continue }
+            let rm = s.member(interiorRooms)?.0
+            for i in 0..<blk.size / s.size {
+                let o = blk.offset + i * s.size
+                guard o + s.size <= p.b.count else { continue }
+                var list: [WorldEntity] = []
+                var slot: [Int: Int] = [:]
+                for (k, (eo, t)) in structRefs(p, o + em.offset, want: { _ in false }).enumerated() {
+                    if layouts[t] == nil, let st = p.structs[t], let l = EntityLayout(st, p.structs) { layouts[t] = l }
+                    guard let l = layouts[t], eo + l.size <= p.b.count, l.batch == nil else { continue }
+                    var e = l.read(p, eo)
+                    e.parentLocal = -1
+                    slot[k] = list.count
+                    list.append(e)
+                }
+                guard !list.isEmpty else { continue }
+                var inside = [Bool](repeating: false, count: list.count)
+                var boxes: [(SIMD3<Float>, SIMD3<Float>)] = []
+                if let rm = rm {
+                    for (r, (ro, t)) in structRefs(p, o + rm.offset, want: isRoom).enumerated() {
+                        guard let rs = p.structs[t], let (mn, _) = rs.member(roomMin), let (mx, _) = rs.member(roomMax), let (ob, _) = rs.member(roomObjects) else { continue }
+                        if r > 0 {
+                            boxes.append((SIMD3(p.f32(ro + mn.offset), p.f32(ro + mn.offset + 4), p.f32(ro + mn.offset + 8)),
+                                          SIMD3(p.f32(ro + mx.offset), p.f32(ro + mx.offset + 4), p.f32(ro + mx.offset + 8))))
+                        }
+                        guard r > 0, let (ao, n) = p.array(at: ro + ob.offset), ao + 4 * n <= p.b.count else { continue }
+                        for k in 0..<n { if let j = slot[Int(p.u32(ao + 4 * k))] { inside[j] = true } }
+                    }
+                }
+                out[p.u32(o + nm.offset)] = InteriorDef(entities: list, inside: inside, boxes: boxes)
+            }
+        }
+    }
+
+    func expandInteriors(_ defs: [UInt32: InteriorDef]) -> Int {
+        func actual(_ r: SIMD4<Float>) -> simd_quatf {
+            simd_length(r) > 0.5 && r.x.isFinite ? simd_quatf(ix: -r.x, iy: -r.y, iz: -r.z, r: r.w).normalized : simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+        }
+        let n0 = entities.count
+        var added = 0
+        for i in 0..<n0 {
+            let e = entities[i]
+            guard let def = defs[e.archetype] else { continue }
+            let r = e.rotation
+            let qi = simd_length(r) > 0.5 && r.x.isFinite ? simd_quatf(ix: r.x, iy: r.y, iz: r.z, r: r.w).normalized : simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+            var gate: Int32 = -1
+            if !def.boxes.isEmpty {
+                gate = Int32(gates.count)
+                gates.append(InteriorGate(position: e.position, rotation: qi, boxes: def.boxes))
+            }
+            for (k, src) in def.entities.enumerated() {
+                var c = src
+                let q = (qi * actual(c.rotation)).normalized
+                c.position = e.position + qi.act(c.position)
+                c.rotation = SIMD4(-q.imag.x, -q.imag.y, -q.imag.z, q.real)
+                c.map = e.map
+                c.parent = Int32(i)
+                c.batch = -1
+                c.gate = def.inside[k] ? gate : -1
+                entities.append(c)
+            }
+            entities[i].numChildren = UInt32(def.entities.count)
+            entities[i].gate = gate
+            added += def.entities.count
+        }
+        return added
     }
 
     public static func load(sources: [(ArchiveIndex, MappedFile)], progress: ((String) -> Void)? = nil) -> WorldData {
         let w = WorldData()
         let lock = NSLock()
+        var interiors: [UInt32: InteriorDef] = [:]
         var parts: [(UInt64, Int, MapInfo, [WorldEntity], [UInt64])] = []
         for (si, (index, file)) in sources.enumerated() {
             let starts = MapData.prd0Starts(index)
@@ -275,11 +400,14 @@ public final class WorldData {
                 guard let r = try? index.resource(at: starts[i], from: file, physical: false), let p = try? PRD0(r.virtual) else { return }
                 var arch: [UInt32: ArchetypeInfo] = [:]
                 readArchetypes(p, into: &arch)
+                var mlo: [UInt32: InteriorDef] = [:]
+                readInteriors(p, into: &mlo)
                 var phys: [UInt8] = []
                 if needsPhysical(p), let rp = try? index.resource(at: starts[i], from: file, physical: true) { phys = rp.physical }
                 let m = readMap(p, physical: phys)
                 lock.lock()
                 for (k, v) in arch { w.archetypes[k] = v }
+                for (k, v) in mlo { interiors[k] = v }
                 if let (mi, ents, par) = m { parts.append((starts[i], si, mi, ents, par)) }
                 lock.unlock()
             }
@@ -299,6 +427,8 @@ public final class WorldData {
             }
         }
         w.resolveParents()
+        w.interiorEntities = w.expandInteriors(interiors)
+        w.interiorCount = interiors.count
         return w
     }
 
@@ -312,9 +442,45 @@ public final class WorldData {
         }
     }
 
+    func sphere(_ e: WorldEntity) -> (SIMD3<Float>, Float) {
+        guard let a = archetypes[e.archetype] else { return (e.position, 0) }
+        let s = max(e.scaleXY > 0 ? e.scaleXY : 1, e.scaleZ > 0 ? e.scaleZ : 1)
+        let q = simd_length(e.rotation) > 0.5 ? simd_quatf(ix: -e.rotation.x, iy: -e.rotation.y, iz: -e.rotation.z, r: e.rotation.w).normalized : simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+        let c = e.hasBasis ? SIMD3(simd_dot(e.basis.r0, a.center), simd_dot(e.basis.r1, a.center), simd_dot(e.basis.r2, a.center)) : q.act(a.center * s)
+        return (e.position + c, a.radius * s)
+    }
+
     func resolveParents() {
         var byId: [UInt64: Int] = [:]
         for (i, m) in maps.enumerated() where m.id != 0 { byId[m.id] = i }
+        var extras: [Int32: (start: Int, count: Int)] = [:]
+        var i = 0
+        while i < entities.count {
+            let h = entities[i].batch
+            if h >= 0 && Int(h) != i {
+                var j = i
+                while j < entities.count && entities[j].batch == h { j += 1 }
+                extras[h] = (i, j - i)
+                i = j
+            } else {
+                i += 1
+            }
+        }
+        func outside(_ pi: Int, _ p: SIMD3<Float>) -> (Float, Float) {
+            func one(_ k: Int) -> (Float, Float) {
+                let (c, r) = sphere(entities[k])
+                let d = simd_distance(c, p)
+                return (max(0, d - r), d)
+            }
+            var best = one(pi)
+            if entities[pi].batch == Int32(pi), let run = extras[Int32(pi)] {
+                for k in run.start..<(run.start + run.count) {
+                    let v = one(k)
+                    if v.0 < best.0 || (v.0 == best.0 && v.1 < best.1) { best = v }
+                }
+            }
+            return best
+        }
         var assigned = [Int32](repeating: 0, count: entities.count)
         parentStats = (maps.count, 0, 0, 0)
         for m in maps where m.parentCount > 0 {
@@ -326,17 +492,18 @@ public final class WorldData {
                 let pl = Int(e.parentLocal)
                 guard pl >= 0 else { continue }
                 let r = WorldData.rank(e.lodLevel)
+                let p = sphere(e).0
                 var best = -1
-                var bestD = Float.infinity
+                var bestScore = (Float.infinity, Float.infinity)
                 for pmi in pms {
                     let pm = maps[pmi]
                     guard pl < Int(pm.count) else { continue }
                     let pi = Int(pm.first) + pl
                     let pe = entities[pi]
                     guard pe.numChildren > 0, WorldData.rank(pe.lodLevel) > r else { continue }
-                    let d = simd_distance(pe.position, e.position)
-                    if d < bestD {
-                        bestD = d
+                    let sc = outside(pi, p)
+                    if sc.0 < bestScore.0 || (sc.0 == bestScore.0 && sc.1 < bestScore.1) {
+                        bestScore = sc
                         best = pi
                     }
                 }
@@ -355,7 +522,7 @@ public final class WorldData {
         var d = Data()
         func put<T>(_ v: T) { withUnsafeBytes(of: v) { d.append(contentsOf: $0) } }
         put(UInt32(0x444C_5257))
-        put(UInt32(7))
+        put(UInt32(13))
         put(UInt64(maps.count)); put(UInt64(entities.count)); put(UInt64(archetypes.count)); put(UInt64(parentIds.count))
         for m in maps { put(m.name); put(m.group); put(m.flags); put(m.first); put(m.count); put(UInt32(m.level)); put(m.id); put(m.parentFirst); put(m.parentCount) }
         for v in parentIds { put(v) }
@@ -367,8 +534,16 @@ public final class WorldData {
             put(UInt32(e.hasBasis ? 1 : 0))
             for r in [e.basis.r0, e.basis.r1, e.basis.r2] { put(r.x); put(r.y); put(r.z) }
             put(e.batch)
+            put(e.gate)
         }
-        for (k, a) in archetypes { put(k); put(a.lodDist); put(a.center.x); put(a.center.y); put(a.center.z); put(a.radius) }
+        for (k, a) in archetypes { put(k); put(a.lodDist); put(a.center.x); put(a.center.y); put(a.center.z); put(a.radius); put(a.asset) }
+        put(UInt64(gates.count))
+        for g in gates {
+            put(g.position.x); put(g.position.y); put(g.position.z)
+            put(g.rotation.imag.x); put(g.rotation.imag.y); put(g.rotation.imag.z); put(g.rotation.real)
+            put(UInt32(g.boxes.count))
+            for (lo, hi) in g.boxes { put(lo.x); put(lo.y); put(lo.z); put(hi.x); put(hi.y); put(hi.z) }
+        }
         try d.write(to: URL(fileURLWithPath: path))
     }
 
@@ -377,9 +552,9 @@ public final class WorldData {
         return try d.withUnsafeBytes { p -> WorldData in
             var o = 0
             func get<T>(_ t: T.Type) -> T { defer { o += MemoryLayout<T>.size }; return p.loadUnaligned(fromByteOffset: o, as: T.self) }
-            guard p.count >= 40, get(UInt32.self) == 0x444C_5257, get(UInt32.self) == 7 else { throw RPFError.format("bad world cache") }
+            guard p.count >= 40, get(UInt32.self) == 0x444C_5257, get(UInt32.self) == 13 else { throw RPFError.format("bad world cache") }
             let nm = Int(get(UInt64.self)), ne = Int(get(UInt64.self)), na = Int(get(UInt64.self)), np = Int(get(UInt64.self))
-            guard p.count >= 40 + nm * 40 + np * 8 + ne * 116 + na * 24 else { throw RPFError.format("world cache truncated") }
+            guard p.count >= 40 + nm * 40 + np * 8 + ne * 120 + na * 28 else { throw RPFError.format("world cache truncated") }
             let w = WorldData()
             w.maps.reserveCapacity(nm)
             for _ in 0..<nm {
@@ -401,13 +576,31 @@ public final class WorldData {
                 let c = SIMD3(get(Float.self), get(Float.self), get(Float.self))
                 e.basis = Basis(a, b, c)
                 e.batch = get(Int32.self)
+                e.gate = get(Int32.self)
                 w.entities.append(e)
             }
             w.archetypes.reserveCapacity(na)
             for _ in 0..<na {
                 let k = get(UInt32.self), l = get(Float.self)
                 let c = SIMD3(get(Float.self), get(Float.self), get(Float.self))
-                w.archetypes[k] = ArchetypeInfo(lodDist: l, center: c, radius: get(Float.self))
+                let r = get(Float.self)
+                w.archetypes[k] = ArchetypeInfo(lodDist: l, center: c, radius: r, asset: get(UInt32.self))
+            }
+            guard o + 8 <= p.count else { throw RPFError.format("world cache truncated") }
+            let ng = Int(get(UInt64.self))
+            w.gates.reserveCapacity(ng)
+            for _ in 0..<ng {
+                guard o + 32 <= p.count else { throw RPFError.format("world cache truncated") }
+                let pos = SIMD3(get(Float.self), get(Float.self), get(Float.self))
+                let q = simd_quatf(ix: get(Float.self), iy: get(Float.self), iz: get(Float.self), r: get(Float.self))
+                let nb = Int(get(UInt32.self))
+                guard o + nb * 24 <= p.count else { throw RPFError.format("world cache truncated") }
+                var boxes: [(SIMD3<Float>, SIMD3<Float>)] = []
+                for _ in 0..<nb {
+                    let lo = SIMD3(get(Float.self), get(Float.self), get(Float.self))
+                    boxes.append((lo, SIMD3(get(Float.self), get(Float.self), get(Float.self))))
+                }
+                w.gates.append(InteriorGate(position: pos, rotation: q, boxes: boxes))
             }
             return w
         }
