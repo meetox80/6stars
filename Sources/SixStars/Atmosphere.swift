@@ -99,6 +99,7 @@ final class Atmosphere {
     var taaFrame = 0
     var prevViewProj: simd_float4x4?
     var prevCamera: SIMD3<Float>?
+    lazy var gameTAA: GameTAA? = GameTAA(device: device)
     static let taaBlend: Float = 0.1
     let fogScatter: MTLTexture
     let fogVolume: MTLTexture
@@ -532,6 +533,12 @@ final class Atmosphere {
         guard let cur = hdr, let d = dist, taaTex.count == 2 else { return hdr }
         let teleport = prevCamera.map { simd_distance($0, camera) > 60 } ?? true
         var prev = prevViewProj ?? unjittered
+        if active, let depthTex = depth, let game = gameTAA,
+           let out = game.resolve(cmd, a: a, hdr: cur, depth: depthTex, prevViewProj: prev, reset: prevViewProj == nil || teleport, exposureState: exposureBuffer) {
+            prevViewProj = unjittered
+            prevCamera = camera
+            return out
+        }
         a.taa.z = (!active || prevViewProj == nil || teleport) ? 1 : Atmosphere.taaBlend
         let out = taaTex[taaIndex], history = taaTex[1 - taaIndex]
         let p = MTLRenderPassDescriptor()
