@@ -34,9 +34,11 @@ A native macOS engine in Swift and Metal that streams the world straight out of 
 macOS 15 with the Xcode command-line tools (Swift 6, Metal).
 
 ```sh
-./build.sh                    # release build of 6stars and rpftool
-./build.sh --product rpftool  # one product
-./make_app.sh                 # ~/testing/6stars.app, ad-hoc signed
+make            # release build of 6stars and rpftool
+make rpftool    # one product (engine, rpftool)
+make app        # ~/testing/6stars.app, ad-hoc signed
+make run ARGS="--snapshot out.png"
+make clean
 ```
 
 The engine reads the archives from `~/testing` (`levels.rpf`, `textures.rpf`, `common.rpf`, `data.rpf`, `data/ttdb`, `pack/`) and keeps its indices and caches in `~/testing/6stars-data`. Missing caches are rebuilt on first launch.
