@@ -650,7 +650,7 @@ case "navbits":
     }
 case "batchnames":
     let home = NSHomeDirectory()
-    let wd = try WorldData.read(from: "\(home)/testing/6stars-data/world-v6.bin")
+    let wd = try WorldData.read(from: "\(home)/testing/6stars-data/world-v7.bin")
     let cat = try Catalog.read(from: "\(home)/testing/6stars-data/catalog.bin")
     var counts: [UInt32: Int] = [:]
     for e in wd.entities where e.hasBasis && e.archetype != 0 { counts[e.archetype, default: 0] += 1 }
@@ -668,7 +668,7 @@ case "navveg":
     guard args.count >= 4, let px = Float(args[2]), let py = Float(args[3]) else { fail("usage: rpftool navveg <x> <y> [reach]") }
     let reach = args.count > 4 ? Float(args[4]) ?? 300 : 300
     let home = NSHomeDirectory()
-    let wd = try WorldData.read(from: "\(home)/testing/6stars-data/world-v6.bin")
+    let wd = try WorldData.read(from: "\(home)/testing/6stars-data/world-v7.bin")
     let cat = try Catalog.read(from: "\(home)/testing/6stars-data/catalog.bin")
     let cell: Float = 2.5
     var veg = Set<Int64>()

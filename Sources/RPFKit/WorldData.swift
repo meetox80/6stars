@@ -37,6 +37,7 @@ public struct WorldEntity: Sendable {
     public var parent: Int32
     public var basis = Basis()
     public var hasBasis = false
+    public var batch: Int32 = -1
 }
 
 public struct ArchetypeInfo: Sendable {
@@ -191,14 +192,15 @@ public final class WorldData {
         func place(_ l: EntityLayout, _ o: Int, _ e: WorldEntity) -> WorldEntity {
             guard l.batch != nil else { return e }
             nb += 1
-            guard let list = l.instances(p, physical, o, e), let first = list.first else {
+            guard var list = l.instances(p, physical, o, e), !list.isEmpty else {
                 nu += 1
                 dropped.insert(ents.count)
                 return e
             }
             ni += list.count
+            for j in list.indices { list[j].batch = Int32(ents.count) }
             extra.append(contentsOf: list.dropFirst())
-            return first
+            return list[0]
         }
         if let f = field(mapEntities), let (ao, n) = p.array(at: f), ao + 8 * n <= p.b.count {
             for k in 0..<n {
@@ -292,6 +294,7 @@ public final class WorldData {
             w.maps.append(m)
             for var e in ents {
                 e.map = mapIndex
+                if e.batch >= 0 { e.batch += m.first }
                 w.entities.append(e)
             }
         }
@@ -352,7 +355,7 @@ public final class WorldData {
         var d = Data()
         func put<T>(_ v: T) { withUnsafeBytes(of: v) { d.append(contentsOf: $0) } }
         put(UInt32(0x444C_5257))
-        put(UInt32(6))
+        put(UInt32(7))
         put(UInt64(maps.count)); put(UInt64(entities.count)); put(UInt64(archetypes.count)); put(UInt64(parentIds.count))
         for m in maps { put(m.name); put(m.group); put(m.flags); put(m.first); put(m.count); put(UInt32(m.level)); put(m.id); put(m.parentFirst); put(m.parentCount) }
         for v in parentIds { put(v) }
@@ -363,6 +366,7 @@ public final class WorldData {
             put(e.parentLocal); put(e.numChildren); put(UInt32(e.lodLevel)); put(e.map); put(e.parent)
             put(UInt32(e.hasBasis ? 1 : 0))
             for r in [e.basis.r0, e.basis.r1, e.basis.r2] { put(r.x); put(r.y); put(r.z) }
+            put(e.batch)
         }
         for (k, a) in archetypes { put(k); put(a.lodDist); put(a.center.x); put(a.center.y); put(a.center.z); put(a.radius) }
         try d.write(to: URL(fileURLWithPath: path))
@@ -373,9 +377,9 @@ public final class WorldData {
         return try d.withUnsafeBytes { p -> WorldData in
             var o = 0
             func get<T>(_ t: T.Type) -> T { defer { o += MemoryLayout<T>.size }; return p.loadUnaligned(fromByteOffset: o, as: T.self) }
-            guard p.count >= 40, get(UInt32.self) == 0x444C_5257, get(UInt32.self) == 6 else { throw RPFError.format("bad world cache") }
+            guard p.count >= 40, get(UInt32.self) == 0x444C_5257, get(UInt32.self) == 7 else { throw RPFError.format("bad world cache") }
             let nm = Int(get(UInt64.self)), ne = Int(get(UInt64.self)), na = Int(get(UInt64.self)), np = Int(get(UInt64.self))
-            guard p.count >= 40 + nm * 40 + np * 8 + ne * 112 + na * 24 else { throw RPFError.format("world cache truncated") }
+            guard p.count >= 40 + nm * 40 + np * 8 + ne * 116 + na * 24 else { throw RPFError.format("world cache truncated") }
             let w = WorldData()
             w.maps.reserveCapacity(nm)
             for _ in 0..<nm {
@@ -396,6 +400,7 @@ public final class WorldData {
                 let b = SIMD3(get(Float.self), get(Float.self), get(Float.self))
                 let c = SIMD3(get(Float.self), get(Float.self), get(Float.self))
                 e.basis = Basis(a, b, c)
+                e.batch = get(Int32.self)
                 w.entities.append(e)
             }
             w.archetypes.reserveCapacity(na)

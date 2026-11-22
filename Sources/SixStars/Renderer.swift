@@ -272,8 +272,15 @@ final class Renderer {
             return true
         }
         let minAngular = Renderer.minPixels * 2 * tan(cam.fovY / 2) / Renderer.referenceHeight
+        func nearFade(_ n: Node, _ d: Float) -> Float {
+            guard n.nearDist > 0 else { return 1 }
+            let reach = n.nearDist * k + n.nearRadius
+            let band = max(reach * 0.12, 4)
+            return (d - (reach - band)) / band
+        }
         func emit(_ i: Int32, _ n: Node, _ d: Float, fadingOut: Bool = false) {
             guard n.drawable >= 0, classes[Int(n.level)] else { return }
+            if nearFade(n, d) <= 0 { return }
             if !castersOnly && n.childCount == 0 && n.radius < d * minAngular { return }
             if skipBatches && ents[Int(i)].hasBasis { return }
             if castersOnly {
@@ -344,7 +351,7 @@ final class Renderer {
             for i in shown where !prevShown.contains(i) {
                 var swap = false
                 let par = ents[Int(i)].parent
-                if par >= 0, prevShown.contains(par) {
+                if par >= 0, ents[Int(i)].batch < 0 || ents[Int(par)].batch < 0, prevShown.contains(par) {
                     swap = true
                     if fadeOut[par] == nil { fadeOut[par] = now }
                 }
@@ -392,9 +399,13 @@ final class Renderer {
                         fade = SIMD4(t, -1, 0, 0)
                     } else if let t = fadeIn[i] {
                         fade = SIMD4(t, 1, 0, 0)
-                    } else if ents[Int(i)].parent < 0 {
-                        let reach = max(n.lodDist, n.childLodDist) * k + n.radius
-                        let a = (reach - simd_distance(n.center, p)) / max(reach * 0.12, 4)
+                    } else {
+                        let d = simd_distance(n.center, p)
+                        var a = nearFade(n, d)
+                        if ents[Int(i)].parent < 0 || ents[Int(i)].batch >= 0 {
+                            let reach = max(n.lodDist, n.childLodDist) * k + n.radius
+                            a = min(a, (reach - d) / max(reach * 0.12, 4))
+                        }
                         if a < 1 { fade = SIMD4(max(a, 0), 2, 0, 0) }
                     }
                 }

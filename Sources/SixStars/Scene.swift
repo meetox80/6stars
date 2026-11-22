@@ -16,6 +16,8 @@ struct Node {
     var firstChild: Int32
     var childCount: Int32
     var level: UInt8
+    var nearDist: Float = 0
+    var nearRadius: Float = 0
 }
 
 struct Grid {
@@ -68,7 +70,12 @@ final class Scene {
         nodes.reserveCapacity(ents.count)
         matched = 0
         var childLists = [[Int32]](repeating: [], count: ents.count)
+        var batchChild = [Bool](repeating: false, count: ents.count)
         for (i, e) in ents.enumerated() where e.parent >= 0 && Int(e.parent) < ents.count && Int(e.parent) != i {
+            if e.batch >= 0 && ents[Int(e.parent)].batch >= 0 {
+                batchChild[i] = true
+                continue
+            }
             childLists[Int(e.parent)].append(Int32(i))
         }
         for e in ents {
@@ -124,6 +131,20 @@ final class Scene {
             nodes.append(Node(row0: row0, row1: row1, row2: row2, center: wc, radius: radius, bcenter: wc, bradius: drawable >= 0 ? radius : 0, lodDist: lod * lodDistanceScale,
                               childLodDist: e.childLodDist > 0 ? e.childLodDist * lodDistanceScale : e.childLodDist, drawable: drawable, firstChild: 0, childCount: 0, level: UInt8(cls)))
         }
+        var near: [Int32: (dist: Float, radius: Float)] = [:]
+        for i in 0..<nodes.count where batchChild[i] {
+            let head = ents[Int(ents[i].parent)].batch
+            let cur = near[head] ?? (0, 0)
+            near[head] = (max(cur.dist, nodes[i].lodDist), max(cur.radius, nodes[i].radius))
+        }
+        if !near.isEmpty {
+            for i in 0..<nodes.count where ents[i].batch >= 0 {
+                if let v = near[ents[i].batch] {
+                    nodes[i].nearDist = v.dist
+                    nodes[i].nearRadius = v.radius
+                }
+            }
+        }
         children.removeAll(keepingCapacity: true)
         roots.removeAll(keepingCapacity: true)
         for i in 0..<nodes.count {
@@ -134,7 +155,7 @@ final class Scene {
             if !list.isEmpty && !(nodes[i].childLodDist > 0) {
                 nodes[i].childLodDist = list.map { nodes[Int($0)].lodDist }.max() ?? 0
             }
-            if ents[i].parent < 0 || Int(ents[i].parent) >= ents.count || Int(ents[i].parent) == i { roots.append(Int32(i)) }
+            if batchChild[i] || ents[i].parent < 0 || Int(ents[i].parent) >= ents.count || Int(ents[i].parent) == i { roots.append(Int32(i)) }
         }
         func rank(_ l: UInt8) -> Int { l == 5 ? 0 : (l == 6 ? 5 : Int(min(l, 4))) }
         var order = Array(0..<nodes.count)

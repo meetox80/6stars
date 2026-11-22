@@ -47,7 +47,7 @@ struct World {
             catalog = Catalog.build(index: index, file: file) { d, n in status("Cataloguing drawables: \(d * 100 / n)%") }
             try? catalog.write(to: catalogPath)
         }
-        let worldPath = "\(dir)/world-v6.bin"
+        let worldPath = "\(dir)/world-v7.bin"
         let worldData: WorldData
         if let w = try? WorldData.read(from: worldPath) {
             worldData = w
