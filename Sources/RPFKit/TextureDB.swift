@@ -161,7 +161,7 @@ public final class TTDBFile: @unchecked Sendable {
     public func storedLevels(_ i: Int) -> Int {
         let inf = info(i)
         guard let eb = inf.elementBytes else { return inf.mipCount }
-        return layoutOf(inf, TextureLayout(elementBytes: eb, mode: Int(inf.flags >> 8) & 3)).ranges.count
+        return layoutOf(inf, TextureLayout(elementBytes: eb, mode: Int(inf.flags >> 8) & 3, bits: TextureDB.tileBits(eb, Int(inf.flags >> 8) & 3))).ranges.count
     }
 
     public func decodable(_ i: Int) -> (levels: Int, total: Int) {
@@ -173,7 +173,7 @@ public final class TTDBFile: @unchecked Sendable {
     public func check(_ i: Int) -> (layoutTotal: Int, chunkTotal: Int?) {
         let inf = info(i)
         guard let eb = inf.elementBytes else { return (0, nil) }
-        let total = layoutOf(inf, TextureLayout(elementBytes: eb, mode: Int(inf.flags >> 8) & 3)).total
+        let total = layoutOf(inf, TextureLayout(elementBytes: eb, mode: Int(inf.flags >> 8) & 3, bits: TextureDB.tileBits(eb, Int(inf.flags >> 8) & 3))).total
         guard let c = chunkContaining(inf.offset), chunkStart[c] == inf.offset else { return (total, nil) }
         var sum = 0
         for k in c..<min(c + inf.split + 1, chunkStart.count) { sum += chunkSize(k) }
@@ -238,14 +238,14 @@ public final class TTDBFile: @unchecked Sendable {
     public func layoutDescription(_ i: Int) -> String {
         let inf = info(i)
         guard let eb = inf.elementBytes else { return "unsupported" }
-        let l = layoutOf(inf, TextureLayout(elementBytes: eb, mode: Int(inf.flags >> 8) & 3))
+        let l = layoutOf(inf, TextureLayout(elementBytes: eb, mode: Int(inf.flags >> 8) & 3, bits: TextureDB.tileBits(eb, Int(inf.flags >> 8) & 3)))
         return String(format: "room 0x%x total 0x%x levels ", room(inf) ?? -1, l.total) + l.ranges.map { String(format: "%dx%d@-0x%x+0x%x", $0.ew, $0.eh, -$0.start, $0.size) }.joined(separator: " ")
     }
 
     public func image(_ i: Int) throws -> TextureImage {
         let inf = info(i)
         guard let eb = inf.elementBytes else { throw RPFError.format("unsupported texture format \(inf.format)") }
-        let layout = TextureLayout(elementBytes: eb, mode: Int(inf.flags >> 8) & 3)
+        let layout = TextureLayout(elementBytes: eb, mode: Int(inf.flags >> 8) & 3, bits: TextureDB.tileBits(eb, Int(inf.flags >> 8) & 3))
         let (ranges, extent) = layoutOf(inf, layout)
         let total = (max(extent, room(inf) ?? extent) + 4095) / 4096 * 4096
         let base = inf.offset
@@ -281,6 +281,14 @@ public final class TTDBFile: @unchecked Sendable {
         out.width = max(1, inf.width >> first)
         out.height = max(1, inf.height >> first)
         return TextureImage(info: out, mips: mips, firstLevel: first)
+    }
+}
+
+extension TextureDB {
+    static func tileBits(_ eb: Int, _ mode: Int) -> String? {
+        if eb == 16 && mode != 0 { return "yyxxyxyx" }
+        if eb == 4 && mode == 0 { return "xxyyxyyxyx" }
+        return nil
     }
 }
 
