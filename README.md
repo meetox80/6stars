@@ -1,6 +1,10 @@
 <div align="center">
 
-<a href="https://6stars.ox80.cc"><img src=".github/assets/banner.png" alt="6stars: independent engine for GTA VI and documentation of its RPF9 package format" width="100%"></a>
+<a href="https://6stars.ox80.cc"><img src=".github/assets/vi.png" alt="VI" width="160"></a>
+
+<h1>6stars</h1>
+
+<p>Independent engine for GTA VI</p>
 
 <p align="center">
   <a href="https://6stars.ox80.cc"><b>6stars.ox80.cc</b></a>
@@ -22,8 +26,6 @@ A native macOS engine in Swift and Metal that streams the world straight out of 
 > This repository does not contain the game, its files, keys or an executable. You need your own copy of the game data to run the engine.
 >
 > 6stars is written from scratch. No code, tools or assets were taken from the game or from other projects, and nothing here was derived from the game's executable, source code or original pipelines. Every format, shader and system is reimplemented from what the data files themselves show.
-
-## Progress
 
 <p align="center"><img src=".github/assets/progress.png" alt="progress by area" width="672"></p>
 
